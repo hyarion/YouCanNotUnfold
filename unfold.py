@@ -25,7 +25,7 @@
 from enum import Enum, auto
 from functools import reduce
 from itertools import combinations
-from math import degrees, log10, radians
+from math import degrees, log10, pi, radians
 from operator import mul as multiply_operator
 from statistics import StatisticsError, mode
 from typing import Self
@@ -385,6 +385,14 @@ class SketchExtraction:
         return sk
 
     @staticmethod
+    def wire_is_a_hole(w: Part.Wire) -> bool:
+        return (
+            len(w.Edges) == 1
+            and w.Edges[0].Curve.TypeId == "Part::GeomCircle"
+            and abs(w.Edges[0].Length - 2 * pi * w.Edges[0].Curve.Radius) < eps
+        )
+
+    @staticmethod
     def extract_manually(
         unfolded_shape: Part.Shape, normal: Vector
     ) -> tuple[Part.Shape]:
@@ -399,10 +407,15 @@ class SketchExtraction:
             if f.normalAt(0, 0).getAngle(normal) < eps_angular
         ][0]
         sketch_profile = top_face.OuterWire
-        inner_wires = [
-            w for w in top_face.Wires if w.hashCode() != sketch_profile.hashCode()
-        ]
-        return sketch_profile, inner_wires
+        inner_wires = []
+        hole_wires = []
+        for w in top_face.Wires:
+            if w.hashCode() != sketch_profile.hashCode():
+                if SketchExtraction.wire_is_a_hole(w):
+                    hole_wires.append(w)
+                else:
+                    inner_wires.append(w)
+        return sketch_profile, inner_wires, hole_wires
 
     @staticmethod
     def extract_with_techdraw(solid: Part.Shape, direction: Vector) -> Part.Shape:
@@ -826,7 +839,7 @@ def gui_unfold() -> None:
     unfolded_shape, bend_lines = unfold(shp, root_face_index, k_factor=0.5)
 
     root_normal = shp.Faces[root_face_index].normalAt(0, 0)
-    sketch_profile, inner_wires = SketchExtraction.extract_manually(
+    sketch_profile, inner_wires, hole_wires = SketchExtraction.extract_manually(
         unfolded_shape, root_normal
     )
     # move the sketch profiles nicely to the origin
@@ -863,6 +876,13 @@ def gui_unfold() -> None:
         )
         inner_lines_doc_obj.ViewObject.LineColor = (255, 255, 0, 0)
         inner_lines_doc_obj.ViewObject.PointColor = (255, 255, 0, 0)
+    if hole_wires:
+        hole_lines = Part.makeCompound(hole_wires).transformed(sketch_align_transform)
+        hole_lines_doc_obj = SketchExtraction.edges_to_sketch_object(
+            hole_lines, selected_object.Label + "_Holes"
+        )
+        hole_lines_doc_obj.ViewObject.LineColor = (85, 255, 0, 0)
+        hole_lines_doc_obj.ViewObject.PointColor = (85, 255, 0, 0)
 
 
 if __name__ == "__main__":
