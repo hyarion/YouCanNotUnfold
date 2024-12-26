@@ -24,7 +24,7 @@
 
 from enum import Enum, auto
 from functools import reduce
-from itertools import combinations
+from itertools import combinations, permutations
 from math import degrees, log10, radians
 from operator import mul as multiply_operator
 from statistics import StatisticsError, mode
@@ -42,14 +42,12 @@ eps = FreeCAD.Base.Precision.approximation()
 eps_angular = FreeCAD.Base.Precision.angular()
 
 
-def round_vector(vec: FreeCAD.Vector, ndigits: int) -> FreeCAD.Vector:
-    return FreeCAD.Vector(*[round(d, ndigits) for d in vec])
-
-def rvec(x,y):
-    num_places = 2
-    return Vector(round(x, num_places),round(y, num_places))
-
 def estimate_thickness_from_cylinders(shp: Part.Shape) -> float:
+    """In a typical sheet metal part, the solid model has lots of bends, each
+    bend having 2 concentric cylindrical faces. If we take the modal
+    difference between all possible combinations of radii present in the
+    subset of shape faces which are cylindrical, we will usually get the
+    exact thickness of the sheet metal part."""
     num_places = abs(int(log10(eps)))
     curv_map = {}
     for face in shp.Faces:
@@ -58,11 +56,15 @@ def estimate_thickness_from_cylinders(shp: Part.Shape) -> float:
             normalized_axis = face.Surface.Axis.normalize()
             if normalized_axis.dot(FreeCAD.Vector(0, 0, -1)) < 0:
                 normalized_axis = normalized_axis.negative()
-            cleaned_axis = round_vector(normalized_axis, num_places)
+            cleaned_axis = FreeCAD.Vector(
+                *[round(d, num_places) for d in normalized_axis]
+            )
             adjusted_center = face.Surface.Center.projectToPlane(
                 FreeCAD.Vector(), normalized_axis
             )
-            cleaned_center = round_vector(adjusted_center, num_places)
+            cleaned_center = FreeCAD.Vector(
+                *[round(d, num_places) for d in adjusted_center]
+            )
             key = (*cleaned_axis, *cleaned_center)
             if key in curv_map:
                 curv_map[key].append(abs(face.Surface.Radius))
@@ -321,6 +323,28 @@ class UVRef(Enum):
     TOP_RIGHT = auto()
 
 
+class BendDirection(Enum):
+    UP = auto()
+    DOWN = auto()
+
+
+def get_bend_direction(bent_face: Part.Face) -> BendDirection:
+    curv_a, curv_b = bent_face.curvatureAt(0, 0)
+    if curv_a < 0 and abs(curv_b) < eps:
+        if bent_face.Orientation == "Forward":
+            return BendDirection.DOWN
+        else:
+            return BendDirection.UP
+    elif curv_b > 0 and abs(curv_a) < eps:
+        if bent_face.Orientation == "Forward":
+            return BendDirection.UP
+        else:
+            return BendDirection.DOWN
+    else:
+        errmsg = "Unable to determine bend direction from cylindrical face"
+        raise RuntimeError(errmsg)
+
+
 def unroll_cylinder(
     cylindrical_face: Part.Face, refpos: UVRef, k_factor: float, thickness: float
 ) -> tuple[Part.Face, Part.Edge]:
@@ -330,61 +354,23 @@ def unroll_cylinder(
     umin, umax, vmin, vmax = cylindrical_face.ParameterRange
     bend_angle = umax - umin
     radius = cylindrical_face.Surface.Radius
-    bend_direction = {"Reversed": "Up", "Forward": "Down"}[cylindrical_face.Orientation]
-    print(f"{radius=}")
-    print(f"{k_factor=}")
-    print(f"{thickness=}")
-    print(f"{bend_angle=}")
-    print(f"{bend_direction=}")
-
-    curv_a, curv_b = cylindrical_face.curvatureAt(0,0)
-    if curv_a < 0 and abs(curv_b) < eps:
-        if cylindrical_face.Orientation == "Forward":
-            bend_direction = "Down"
-        else:
-            bend_direction = "Up"
-    elif curv_b > 0 and abs(curv_a) < eps:
-        if cylindrical_face.Orientation == "Forward":
-            bend_direction = "Up"
-        else:
-            bend_direction = "Down"
-    else:
-        errmsg = "WTF"
-        raise RuntimeError(errmsg)
-
-    if bend_direction == "Up":
+    bend_direction = get_bend_direction(cylindrical_face)
+    if bend_direction == BendDirection.UP:
         bend_allowance = (radius + k_factor * thickness) * bend_angle
     else:
         bend_allowance = (radius - thickness * (1 - k_factor)) * bend_angle
     overall_height = abs(vmax - vmin)
-    # print(f"{(radius * bend_allowance / (radius * bend_angle))=}")
     y_scale_factor = radius * bend_allowance / (radius * bend_angle)
     flattened_edges = []
     for e in cylindrical_face.Edges:
-        # Part.show(e, "edge")
         edge_on_surface, e_param_min, e_param_max = cylindrical_face.curveOnSurface(e)
-        # print(f"{edge_on_surface.Length=}")
-        # print(f"{e_param_max=}")
-        # print(f"{e_param_min=}")
-        # print(f"{type(edge_on_surface)=}")
         if isinstance(edge_on_surface, Part.Geom2d.Line2d):
-            # print(f"{edge_on_surface.Direction=}")
-            # print(f"{edge_on_surface.Closed=}")
-            # print(f"{edge_on_surface.Continuity=}")
-            # print(f"{edge_on_surface.FirstParameter=}")
-            # print(f"{edge_on_surface.LastParameter=}")
-            # print(f"{edge_on_surface.value(e_param_min)=}")
-            # print(f"{edge_on_surface.value(e_param_max)=}")
-            # print(f"{edge_on_surface.value(1000)=}")
             v1 = edge_on_surface.value(e_param_min)
             y1, x1 = v1.x - umin, v1.y - vmin
-            # print(f"{(x1, y1)=}")
             v2 = edge_on_surface.value(e_param_max)
             y2, x2 = v2.x - umin, v2.y - vmin
-            # print(f"{(x2, y2)=}")
-            # print(f"{y_scale_factor=}")
             line = Part.makeLine(
-                rvec(x1, y1 * y_scale_factor), rvec(x2, y2 * y_scale_factor)
+                Vector(x1, y1 * y_scale_factor), Vector(x2, y2 * y_scale_factor)
             )
             flattened_edges.append(line)
         elif isinstance(edge_on_surface, Part.Geom2d.Line2dSegment):
@@ -393,7 +379,7 @@ def unroll_cylinder(
             v2 = edge_on_surface.EndPoint
             y2, x2 = v2.x - umin, v2.y - vmin
             line = Part.makeLine(
-                rvec(x1, y1 * y_scale_factor), rvec(x2, y2 * y_scale_factor)
+                Vector(x1, y1 * y_scale_factor), Vector(x2, y2 * y_scale_factor)
             )
             flattened_edges.append(line)
         elif isinstance(edge_on_surface, Part.Geom2d.BSplineCurve2d):
@@ -416,17 +402,14 @@ def unroll_cylinder(
     # FaceMaker classes to produce valid output. Running Part.sortEdges
     # fixes this. Interestingly, shapes exported as .step files then imported
     # back into FreeCAD always have nicely sorted edges for each face...
-    Part.show(Part.makeCompound(flattened_edges), "flattened_edges")
-    list_of_list_of_edges = Part.sortEdges(Part.makeCompound(flattened_edges).Edges, 0.1)
-    print(f"{list_of_list_of_edges=}")
-    # wire = [Part.Wire(x) for x in list_of_list_of_edges]
-    wire = Part.Wire(flattened_edges)
-    # print(f"{len(wire)=}")
-    Part.show(wire, "the_wire")
-    face = Part.makeFace(wire, "Part::FaceMakerBullseye")
+    list_of_list_of_edges = Part.sortEdges(flattened_edges)
+    wires = [Part.Wire(x) for x in list_of_list_of_edges]
+    try:
+        face = Part.makeFace(wires, "Part::FaceMakerBullseye")
+    except RuntimeError:
+        errmsg = "Failed to create unbent face from cylinder"
+        raise RuntimeError(errmsg) from None
     mirror_base_pos = Vector(overall_height / 2, bend_allowance / 2)
-    # Part.show(face, f"face_{refpos}")
-
     flip = [
         lambda x: x,
         lambda x: x.mirror(mirror_base_pos, Vector(0, 1)),
@@ -435,8 +418,6 @@ def unroll_cylinder(
         ),
         lambda x: x.mirror(mirror_base_pos, Vector(1, 0)),
     ]
-    from itertools import permutations
-
     flip_options = list(permutations([0, 1, 2, 3], 4))
     flip_order = flip_options[1]
     match refpos:
@@ -474,10 +455,7 @@ def compute_unbend_transform(
     if bend_angle > radians(359.9):
         errmsg = "Bend angle must be less that 359.9 degrees"
         raise RuntimeError(errmsg)
-    # for cylindrical surfaces:
-    # the surface of the outside of a tube ('convex') is always forward-oriented
-    # the surface of the inside of a tube ('concave') is always reverse-oriented
-    bend_direction = {"Reversed": "Up", "Forward": "Down"}[bent_face.Orientation]
+    bend_direction = get_bend_direction(bent_face)
     # the reference edge should intersect with the bent cylindrical surface at
     # either opposite corner of surface's uv-parameter range.
     # We need to determine which of these possibilities is correct
@@ -533,7 +511,7 @@ def compute_unbend_transform(
     # the actual unbend transformation is found by reversing the rotation of
     # a flat face after the bend due to the bending operation,
     # then pushing it forward according to the bend allowance
-    if bend_direction == "Up":
+    if bend_direction == BendDirection.UP:
         bend_allowance = (radius + k_factor * thickness) * bend_angle
     else:
         bend_allowance = (radius - thickness * (1 - k_factor)) * bend_angle
@@ -546,12 +524,12 @@ def compute_unbend_transform(
     )
     rot = Rotation(
         Vector(1, 0, 0),
-        (-1 if bend_direction == "Up" else 1) * degrees(bend_angle)
+        (-1 if bend_direction == BendDirection.UP else 1) * degrees(bend_angle)
     ).toMatrix()
     translate = Matrix(
         1, 0, 0, 0,
         0, 1, 0, 0,
-        0, 0, 1, (1 if bend_direction == "Up" else -1) * radius,
+        0, 0, 1, (1 if bend_direction == BendDirection.UP else -1) * radius,
         0, 0, 0, 1
     )
     # fmt: on
@@ -643,7 +621,7 @@ def unfold(shape: Part.Shape, root_face_index: int, k_factor: int) -> Part.Shape
         "Network of tangent faces:\n" + str(nx.nx_pydot.to_pydot(dg))
     )
     # the digraph should now have everything we need to unfold the shape
-    # for every edge n1--e1-->n2 where n2 is a cylindrical face, must be
+    # for every edge f1--e1-->f2 where f2 is a cylindrical face, must be
     # fed through our unbending functions with e1 as the stationary edge
     for e in [
         e for e in dg.edges if shape.Faces[e[1]].Surface.TypeId == "Part::GeomCylinder"
@@ -669,12 +647,20 @@ def unfold(shape: Part.Shape, root_face_index: int, k_factor: int) -> Part.Shape
         )
         # determine the unbent face shape from the reference UV position
         # also get a bend line across the middle of the flattened face
-        unbent_face, bend_line = unroll_cylinder(bend_part, uvref, k_factor, thickness)
-        # add the transformation and unbend shape to the end node of the edge
-        # as attributes
-        dg.nodes[e[1]]["unbent_shape"] = unbent_face.transformed(alignment_transform)
         dg.nodes[e[1]]["unbend_transform"] = overall_transform
-        dg.nodes[e[1]]["bend_line"] = bend_line.transformed(alignment_transform)
+        try:
+            unbent_face, bend_line = unroll_cylinder(
+                bend_part, uvref, k_factor, thickness
+            )
+            # add the transformation and unbend shape to the end node of the edge
+            # as attributes
+            dg.nodes[e[1]]["unbent_shape"] = unbent_face.transformed(
+                alignment_transform
+            )
+            dg.nodes[e[1]]["bend_line"] = bend_line.transformed(alignment_transform)
+        except Exception as E:
+            msg = "failed to unroll a cylindrical face"
+            FreeCAD.Console.PrintWarning(msg + "\n" + f"Original exception: {E}\n")
     # get a path from the root (stationary) face to each other face
     # so we can combine transformations to position the final shape
     list_of_faces = []
@@ -697,7 +683,7 @@ def unfold(shape: Part.Shape, root_face_index: int, k_factor: int) -> Part.Shape
         # bent faces of the input shape are swapped for their unbent versions
         if "unbent_shape" in node_data[face_id]:
             finalized_face = node_data[face_id]["unbent_shape"]
-        # planer faces of the input shape are returned aligned to the root face,
+        # planar faces of the input shape are returned aligned to the root face,
         # but otherwise unmodified
         else:
             finalized_face = shape.Faces[face_id]
@@ -754,7 +740,6 @@ def gui_unfold() -> None:
         sketch_profile, shp.Faces[root_face_index]
     )
     sketch_profile = sketch_profile.transformed(sketch_align_transform)
-    bend_lines = bend_lines.transformed(sketch_align_transform)
     # show objects in the active document
     unfold_doc_obj = Part.show(unfolded_shape, selected_object.Label + "_Unfold")
     unfold_doc_obj.ViewObject.Transparency = 70
@@ -764,12 +749,15 @@ def gui_unfold() -> None:
     )
     sketch_doc_obj.ViewObject.LineColor = (0, 85, 255, 0)
     sketch_doc_obj.ViewObject.PointColor = (0, 85, 255, 0)
-    bend_lines_doc_obj = convert_edges_to_sketch(
-        bend_lines, selected_object.Label + "_BendLines"
-    )
-    bend_lines_doc_obj.ViewObject.LineColor = (255, 0, 0, 0)
-    bend_lines_doc_obj.ViewObject.PointColor = (255, 0, 0, 0)
-    bend_lines_doc_obj.ViewObject.DrawStyle = "Dashdot"
+    # bend lines are sometimes not present
+    if bend_lines:
+        bend_lines = bend_lines.transformed(sketch_align_transform)
+        bend_lines_doc_obj = convert_edges_to_sketch(
+            bend_lines, selected_object.Label + "_BendLines"
+        )
+        bend_lines_doc_obj.ViewObject.LineColor = (255, 0, 0, 0)
+        bend_lines_doc_obj.ViewObject.PointColor = (255, 0, 0, 0)
+        bend_lines_doc_obj.ViewObject.DrawStyle = "Dashdot"
     # inner lines are sometimes not present
     if inner_wires:
         inner_lines = Part.makeCompound(inner_wires).transformed(sketch_align_transform)
