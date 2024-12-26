@@ -316,7 +316,8 @@ def build_graph_of_tangent_faces(shp: Part.Shape, root: int) -> nx.Graph | None:
 
 
 class UVRef(Enum):
-    # reference corner for a rectangular-ish surface patch
+    """Describes reference corner for a rectangular-ish surface patch"""
+
     BOTTOM_LEFT = auto()
     BOTTOM_RIGHT = auto()
     TOP_LEFT = auto()
@@ -324,11 +325,17 @@ class UVRef(Enum):
 
 
 class BendDirection(Enum):
+    """Up is like a tray with a raised lip,
+    down is like the rolled over edges of a table."""
+
     UP = auto()
     DOWN = auto()
 
 
 def get_bend_direction(bent_face: Part.Face) -> BendDirection:
+    """Cylindrical faces may be convex or concave, and the boundary
+    representation can be forward or reversed. the bend direction may be
+    determined according to these values."""
     curv_a, curv_b = bent_face.curvatureAt(0, 0)
     if curv_a < 0 and abs(curv_b) < eps:
         if bent_face.Orientation == "Forward":
@@ -721,7 +728,11 @@ def gui_unfold() -> None:
     shp = selected_object.Shape.transformed(object_placement.inverse())
     root_face_index = int(selection.SubElementNames[0][4:]) - 1
     unfolded_shape, bend_lines = unfold(shp, root_face_index, k_factor=0.5)
-    # extract sketch lines from the topmost flattened face
+    # extract sketch lines from the topmost flattened face.
+    # Another approach would be to slice the flattened solid with a plane to
+    # get a cross section of the middle of the unfolded shape.
+    # This would probably be slower, but might be more robust in cases where
+    # the outerwire is not cleanly defined.
     root_normal = shp.Faces[root_face_index].normalAt(0, 0)
     top_face = [
         f
