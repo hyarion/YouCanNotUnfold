@@ -28,13 +28,22 @@ from itertools import combinations
 from math import degrees, log10, radians
 from operator import mul as multiply_operator
 from statistics import StatisticsError, mode
+from typing import Self
 
 import FreeCAD
-import networkx as nx
 import Part
 from Draft import makeSketch
 from FreeCAD import Matrix, Placement, Rotation, Vector
 from TechDraw import projectEx as project_shape_to_plane
+
+try:
+    import networkx as nx
+except ImportError:
+    FreeCAD.Console.PrintUserError(
+        "The NetworkX Python package could not be imported. "
+        "Consider checking that it is installed, "
+        "or reinstalling the SheetMetal workbench using the addon manager\n"
+    )
 
 # used when comparing positions in 3D space
 eps = FreeCAD.Base.Precision.approximation()
@@ -42,70 +51,91 @@ eps = FreeCAD.Base.Precision.approximation()
 eps_angular = FreeCAD.Base.Precision.angular()
 
 
-def estimate_thickness_from_cylinders(shp: Part.Shape) -> float:
-    """In a typical sheet metal part, the solid model has lots of bends, each
-    bend having 2 concentric cylindrical faces. If we take the modal
-    difference between all possible combinations of radii present in the
-    subset of shape faces which are cylindrical, we will usually get the
-    exact thickness of the sheet metal part."""
-    num_places = abs(int(log10(eps)))
-    curv_map = {}
-    for face in shp.Faces:
-        if face.Surface.TypeId == "Part::GeomCylinder":
-            # normalize the axis and center-point
-            normalized_axis = face.Surface.Axis.normalize()
-            if normalized_axis.dot(FreeCAD.Vector(0, 0, -1)) < 0:
-                normalized_axis = normalized_axis.negative()
-            cleaned_axis = FreeCAD.Vector(
-                *[round(d, num_places) for d in normalized_axis]
-            )
-            adjusted_center = face.Surface.Center.projectToPlane(
-                FreeCAD.Vector(), normalized_axis
-            )
-            cleaned_center = FreeCAD.Vector(
-                *[round(d, num_places) for d in adjusted_center]
-            )
-            key = (*cleaned_axis, *cleaned_center)
-            if key in curv_map:
-                curv_map[key].append(abs(face.Surface.Radius))
-            else:
-                curv_map[key] = [
-                    face.Surface.Radius,
-                ]
-    combined_list_of_thicknesses = []
-    for radset in curv_map.values():
-        if len(radset) > 1:
-            for r1, r2 in combinations(radset, 2):
-                if (val := abs(r1 - r2)) > eps:
-                    combined_list_of_thicknesses.append(val)
-    try:
-        thickness_value = mode(combined_list_of_thicknesses)
-        return thickness_value
-    except StatisticsError:
-        return 0.0
+class EstimateThickness:
+    """This class provides helper functions to determine the sheet thickness
+    of a solid-modelled sheet metal part."""
 
+    @staticmethod
+    def from_cylinders(shp: Part.Shape) -> float:
+        """In a typical sheet metal part, the solid model has lots of bends, each
+        bend having 2 concentric cylindrical faces. If we take the modal
+        difference between all possible combinations of radii present in the
+        subset of shape faces which are cylindrical, we will usually get the
+        exact thickness of the sheet metal part."""
+        num_places = abs(int(log10(eps)))
+        curv_map = {}
+        for face in shp.Faces:
+            if face.Surface.TypeId == "Part::GeomCylinder":
+                # normalize the axis and center-point
+                normalized_axis = face.Surface.Axis.normalize()
+                if normalized_axis.dot(FreeCAD.Vector(0, 0, -1)) < 0:
+                    normalized_axis = normalized_axis.negative()
+                cleaned_axis = FreeCAD.Vector(
+                    *[round(d, num_places) for d in normalized_axis]
+                )
+                adjusted_center = face.Surface.Center.projectToPlane(
+                    FreeCAD.Vector(), normalized_axis
+                )
+                cleaned_center = FreeCAD.Vector(
+                    *[round(d, num_places) for d in adjusted_center]
+                )
+                key = (*cleaned_axis, *cleaned_center)
+                if key in curv_map:
+                    curv_map[key].append(abs(face.Surface.Radius))
+                else:
+                    curv_map[key] = [
+                        face.Surface.Radius,
+                    ]
+        combined_list_of_thicknesses = []
+        for radset in curv_map.values():
+            if len(radset) > 1:
+                for r1, r2 in combinations(radset, 2):
+                    if (val := abs(r1 - r2)) > eps:
+                        combined_list_of_thicknesses.append(val)
+        try:
+            thickness_value = mode(combined_list_of_thicknesses)
+            return thickness_value
+        except StatisticsError:
+            return 0.0
 
-def estimate_thickness_from_face(shape: Part.Shape, selected_face: int) -> float:
-    ref_face = shape.Faces[selected_face]
-    # find all planar faces that are parallel to the chosen face
-    candidates = [
-        f
-        for f in shape.Faces
-        if f.hashCode() != ref_face.hashCode()
-        and f.Surface.TypeId == "Part::GeomPlane"
-        and ref_face.Surface.Axis.isParallel(f.Surface.Axis, eps_angular)
-    ]
-    if not candidates:
-        return 0.0
-    opposite_face = sorted(candidates, key=lambda x: abs(x.Area - ref_face.Area))[0]
-    return abs(
-        opposite_face.valueAt(0, 0).distanceToPlane(
-            ref_face.Surface.Position, ref_face.Surface.Axis
+    @staticmethod
+    def from_face(shape: Part.Shape, selected_face: int) -> float:
+        ref_face = shape.Faces[selected_face]
+        # find all planar faces that are parallel to the chosen face
+        candidates = [
+            f
+            for f in shape.Faces
+            if f.hashCode() != ref_face.hashCode()
+            and f.Surface.TypeId == "Part::GeomPlane"
+            and ref_face.Surface.Axis.isParallel(f.Surface.Axis, eps_angular)
+        ]
+        if not candidates:
+            return 0.0
+        opposite_face = sorted(candidates, key=lambda x: abs(x.Area - ref_face.Area))[0]
+        return abs(
+            opposite_face.valueAt(0, 0).distanceToPlane(
+                ref_face.Surface.Position, ref_face.Surface.Axis
+            )
         )
-    )
+
+    @staticmethod
+    def using_best_method(shape: Part.Shape, selected_face: int) -> float:
+        thickness = EstimateThickness.from_cylinders(shape)
+        if not thickness:
+            thickness = EstimateThickness.from_face(shape, selected_face)
+        if not thickness:
+            errmsg = "Couldn't estimate thickness for shape!"
+            raise RuntimeError(errmsg)
+        return thickness
 
 
 class TangentFaces:
+    """This class provides functions to check if brep faces are tangent to
+    each other. each compare_x_x function accepts two surfaces of a
+    particular type, and returns a boolean value indiciating tangency.
+    The compare function accepts two faces and selects the correct
+    compare_x_x function automatically,"""
+
     @staticmethod
     def compare_plane_plane(p1: Part.Plane, p2: Part.Plane) -> bool:
         # returns True if the two planes have similar normals and the base
@@ -294,35 +324,6 @@ class TangentFaces:
                 return False
 
 
-def build_graph_of_tangent_faces(shp: Part.Shape, root: int) -> nx.Graph | None:
-    # created a simple undirected graph object
-    gr = nx.Graph()
-    # weird shape mutability nonsense? -> have to use indexes, because the
-    # underlying geometry may get changed around while building the graph
-    face_hashes = [f.hashCode() for f in shp.Faces]
-    index_lookup = {h: i for i, h in enumerate(face_hashes)}
-    # get pairs of faces that share the same edge
-    candidates = [
-        (i, shp.ancestorsOfType(e, Part.Face)) for i, e in enumerate(shp.Edges)
-    ]
-    # filter to remove seams on cylinders or other faces that wrap back onto themselves
-    # other than self-adjacent faces, edges should always have 2 face ancestors
-    # this assumption is probably only valid for watertight solids.
-    for edge_index, faces in filter(lambda c: len(c[1]) == 2, candidates):
-        face_a, face_b = faces
-        if TangentFaces.compare(face_a, face_b):
-            gr.add_edge(
-                index_lookup[face_a.hashCode()],
-                index_lookup[face_b.hashCode()],
-                label=edge_index,
-            )
-    for c in nx.connected_components(gr):
-        if root in c:
-            return gr.subgraph(c).copy()
-    # return None if there is nothing tangent to the seed face
-    return None
-
-
 class UVRef(Enum):
     """Describes reference corner for a rectangular-ish surface patch"""
 
@@ -339,37 +340,156 @@ class BendDirection(Enum):
     UP = auto()
     DOWN = auto()
 
+    @staticmethod
+    def from_face(bent_face: Part.Face) -> Self:
+        """Cylindrical faces may be convex or concave, and the boundary
+        representation can be forward or reversed. the bend direction may be
+        determined according to these values."""
+        curv_a, curv_b = bent_face.curvatureAt(0, 0)
+        if curv_a < 0 and abs(curv_b) < eps:
+            if bent_face.Orientation == "Forward":
+                return BendDirection.DOWN
+            else:
+                return BendDirection.UP
+        elif curv_b > 0 and abs(curv_a) < eps:
+            if bent_face.Orientation == "Forward":
+                return BendDirection.UP
+            else:
+                return BendDirection.DOWN
+        else:
+            errmsg = "Unable to determine bend direction from cylindrical face"
+            raise RuntimeError(errmsg)
 
-def get_bend_direction(bent_face: Part.Face) -> BendDirection:
-    """Cylindrical faces may be convex or concave, and the boundary
-    representation can be forward or reversed. the bend direction may be
-    determined according to these values."""
-    curv_a, curv_b = bent_face.curvatureAt(0, 0)
-    if curv_a < 0 and abs(curv_b) < eps:
-        if bent_face.Orientation == "Forward":
-            return BendDirection.DOWN
-        else:
-            return BendDirection.UP
-    elif curv_b > 0 and abs(curv_a) < eps:
-        if bent_face.Orientation == "Forward":
-            return BendDirection.UP
-        else:
-            return BendDirection.DOWN
-    else:
-        errmsg = "Unable to determine bend direction from cylindrical face"
-        raise RuntimeError(errmsg)
+
+class SketchExtraction:
+    """Helper functions to produce clean 2D geometry from unfolded shapes."""
+
+    @staticmethod
+    def edges_to_sketch_object(
+        edges: list[Part.Edge], object_name: str
+    ) -> FreeCAD.DocumentObject:
+        """Uses functionality from the Draft API to convert a list of edges into a
+        Sketch document object. This allows the user to more easily make small
+        changes to the sheet metal cutting pattern when prepping it
+        for fabrication."""
+        sk = makeSketch(
+            # NOTE: in testing, using the autoconstraint feature
+            # caused errors with some shapes
+            edges,
+            autoconstraints=False,
+            addTo=None,
+            delete=False,
+            name=object_name,
+        )
+        sk.Label = object_name
+        return sk
+
+    @staticmethod
+    def extract_manually(
+        unfolded_shape: Part.Shape, normal: Vector
+    ) -> tuple[Part.Shape]:
+        """extract sketch lines from the topmost flattened face."""
+        # Another approach would be to slice the flattened solid with a plane to
+        # get a cross section of the middle of the unfolded shape.
+        # This would probably be slower, but might be more robust in cases where
+        # the outerwire is not cleanly defined.
+        top_face = [
+            f
+            for f in unfolded_shape.Faces
+            if f.normalAt(0, 0).getAngle(normal) < eps_angular
+        ][0]
+        sketch_profile = top_face.OuterWire
+        inner_wires = [
+            w for w in top_face.Wires if w.hashCode() != sketch_profile.hashCode()
+        ]
+        return sketch_profile, inner_wires
+
+    @staticmethod
+    def extract_with_techdraw(solid: Part.Shape, direction: Vector) -> Part.Shape:
+        """Uses functionality from the TechDraw API to project
+        a 3D shape onto a particular 2D plane."""
+        # this is a slow but robust method of sketch profile extraction
+        # ref: https://github.com/FreeCAD/FreeCAD/blob/main/src/Mod/Draft/draftobjects/shape2dview.py
+        raw_output = project_shape_to_plane(solid, direction)
+        edges = []
+        for group in raw_output[0:5]:
+            if not group.isNull():
+                edges.append(group)
+        compound = Part.makeCompound(edges)
+        return compound
+
+    @staticmethod
+    def move_to_origin(sketch: Part.Compound, root_face: Part.Face) -> Matrix:
+        """Given a 2d shape and a reference face, compute a transformation matrix
+        that aligns the shape's bounding box to the origin of the XY-plane, with
+        the reference face oriented Z-up and rotated sqaure to the global
+        coordinate system."""
+        # find the orientation of the root face that aligns
+        # the U-direction with the x-axis
+        origin = root_face.valueAt(0, 0)
+        x_axis = root_face.valueAt(1, 0) - origin
+        z_axis = root_face.normalAt(0, 0)
+        rotation = Rotation(x_axis, Vector(), z_axis, "ZXY")
+        alignment_transform = Placement(origin, rotation).toMatrix().inverse()
+        sketch_aligned_to_xy_plane = sketch.transformed(alignment_transform)
+        # move in x and y so that the bounding box is entirely in the +x, +y quadrant
+        mov_x = -1 * sketch_aligned_to_xy_plane.BoundBox.XMin
+        mov_y = -1 * sketch_aligned_to_xy_plane.BoundBox.YMin
+        mov_z = -1 * sketch_aligned_to_xy_plane.BoundBox.ZMin
+        shift_transform = Placement(Vector(mov_x, mov_y, mov_z), Rotation()).toMatrix()
+        overall_transform = Matrix()
+        overall_transform.transform(Vector(), alignment_transform)
+        overall_transform.transform(Vector(), shift_transform)
+        return overall_transform
+
+
+def build_graph_of_tangent_faces(shp: Part.Shape, root: int) -> nx.Graph:
+    # created a simple undirected graph object
+    graph_of_shape_faces = nx.Graph()
+    # track faces by their indices, because the underlying pointers to faces
+    # may get changed around while building the graph.
+    face_hashes = [f.hashCode() for f in shp.Faces]
+    index_lookup = {h: i for i, h in enumerate(face_hashes)}
+    # get pairs of faces that share the same edge
+    candidates = [
+        (i, shp.ancestorsOfType(e, Part.Face)) for i, e in enumerate(shp.Edges)
+    ]
+    # filter to remove seams on cylinders or other faces that wrap back onto themselves
+    # other than self-adjacent faces, edges should always have 2 face ancestors
+    # this assumption is probably only valid for watertight solids.
+    for edge_index, faces in filter(lambda c: len(c[1]) == 2, candidates):
+        face_a, face_b = faces
+        if TangentFaces.compare(face_a, face_b):
+            graph_of_shape_faces.add_edge(
+                index_lookup[face_a.hashCode()],
+                index_lookup[face_b.hashCode()],
+                label=edge_index,  # store indexes in the label attr for debugging
+            )
+    # graph_of_shape_faces should have at least three connected subgraphs
+    # (top side, bottom side, and sheet edge sides of the sheetmetal part).
+    # We only care about the subgraph that includes the selected root face.
+    for c in nx.connected_components(graph_of_shape_faces):
+        if root in c:
+            return graph_of_shape_faces.subgraph(c).copy()
+    # raise and error if there is nothing tangent to the seed face
+    errmsg = (
+        "No faces were found that are tangent to the selected face. "
+        "Try selecting a different face, and/"
+        "or confirm that the shape is a watertight solid."
+    )
+    raise RuntimeError(errmsg)
 
 
 def unroll_cylinder(
     cylindrical_face: Part.Face, refpos: UVRef, k_factor: float, thickness: float
 ) -> tuple[Part.Face, Part.Edge]:
-    # the u,v reference position becomes x,y = 0,0
-    # the face is oriented z-up
-    # the u period is always positive: 0.0 <= umin < umax <= 2*pi
+    """Given a cylindrical face and a reference corner, computes a flattened
+    version of the face oriented with respect to the +x,+y quadrant of the
+    2D plane."""
     umin, umax, vmin, vmax = cylindrical_face.ParameterRange
     bend_angle = umax - umin
     radius = cylindrical_face.Surface.Radius
-    bend_direction = get_bend_direction(cylindrical_face)
+    bend_direction = BendDirection.from_face(cylindrical_face)
     if bend_direction == BendDirection.UP:
         bend_allowance = (radius + k_factor * thickness) * bend_angle
     else:
@@ -467,7 +587,7 @@ def compute_unbend_transform(
     if bend_angle > radians(359.9):
         errmsg = "Bend angle must be less that 359.9 degrees"
         raise RuntimeError(errmsg)
-    bend_direction = get_bend_direction(bent_face)
+    bend_direction = BendDirection.from_face(bent_face)
     # the reference edge should intersect with the bent cylindrical surface at
     # either opposite corner of surface's uv-parameter range.
     # We need to determine which of these possibilities is correct
@@ -554,63 +674,24 @@ def compute_unbend_transform(
     return alignment_transform, overall_transform, uvref
 
 
-def get_profile_sketch_lines(solid: Part.Shape, direction: Vector) -> Part.Shape:
-    # this is a slow but robust method of sketch profile extraction
-    # ref: https://github.com/FreeCAD/FreeCAD/blob/main/src/Mod/Draft/draftobjects/shape2dview.py
-    raw_output = project_shape_to_plane(solid, direction)
-    edges = []
-    for group in raw_output[0:5]:
-        if not group.isNull():
-            edges.append(group)
-    compound = Part.makeCompound(edges)
-    return compound
-
-
-def sketch_transform_to_origin(sketch: Part.Compound, root_face: Part.Face) -> Matrix:
-    # find the orientation of the root face that puts the most straight
-    # lines in line with the x-axis
-    origin = root_face.valueAt(0, 0)
-    x_axis = root_face.valueAt(1, 0) - origin
-    z_axis = root_face.normalAt(0, 0)
-    rotation = Rotation(x_axis, Vector(), z_axis, "ZXY")
-    alignment_transform = Placement(origin, rotation).toMatrix().inverse()
-    sketch_aligned_to_xy_plane = sketch.transformed(alignment_transform)
-    # move in x and y so that the bounding box is entirely in the +x, +y quadrant
-    mov_x = -1 * sketch_aligned_to_xy_plane.BoundBox.XMin
-    mov_y = -1 * sketch_aligned_to_xy_plane.BoundBox.YMin
-    mov_z = -1 * sketch_aligned_to_xy_plane.BoundBox.ZMin
-    shift_transform = Placement(Vector(mov_x, mov_y, mov_z), Rotation()).toMatrix()
-    overall_transform = Matrix()
-    overall_transform.transform(Vector(), alignment_transform)
-    overall_transform.transform(Vector(), shift_transform)
-    return overall_transform
-
-
-def unfold(shape: Part.Shape, root_face_index: int, k_factor: int) -> Part.Shape:
+def unfold(
+    shape: Part.Shape, root_face_index: int, k_factor: int
+) -> tuple[Part.Shape, Part.Compound]:
+    """Given a solid body of a sheet metal part and a reference face, computes
+    a solid representation of the unbent object, as well as a compound object
+    containing straight edges for each bend centerline."""
     graph_of_sheet_faces = build_graph_of_tangent_faces(shape, root_face_index)
-    if not graph_of_sheet_faces:
-        errmsg = (
-            "No faces were found that are tangent to the selected face. "
-            "Try selecting a different face, and/"
-            "or confirm that the shape is a watertight solid."
-        )
-        raise RuntimeError(errmsg)
-    thickness = estimate_thickness_from_cylinders(shape)
-    if not thickness:
-        thickness = estimate_thickness_from_face(shape, root_face_index)
-    if not thickness:
-        errmsg = "Couldn't estimate thickness for shape!"
-        raise RuntimeError(errmsg)
+    thickness = EstimateThickness.using_best_method(shape, root_face_index)
     # we could also get a random spanning tree here. Would that be faster?
     # Or is it better to take the opportunity to get a spanning tree that meets
     # some criteria for minimization?
     # I.E.: the shorter the longest path in the tree, the fewer nested
     # transformations we have to compute
     spanning_tree = nx.minimum_spanning_tree(graph_of_sheet_faces, weight="label")
-    # convert to 'directed tree'
+    # convert to 'directed tree', where every edge points away from the selected face
     dg = nx.DiGraph()
     for node in spanning_tree:
-        # color the nodes nicely (for debugging)
+        # color the nodes nicely (for debugging only)
         dg.add_node(
             node,
             color={
@@ -629,12 +710,18 @@ def unfold(shape: Part.Shape, root_face_index: int, k_factor: int) -> Part.Shape
             dg.add_edge(f1, f2, label=edata["label"])
         else:
             dg.add_edge(f2, f1, label=edata["label"])
-    FreeCAD.Console.PrintLog(
-        "Network of tangent faces:\n" + str(nx.nx_pydot.to_pydot(dg))
-    )
-    # the digraph should now have everything we need to unfold the shape
-    # for every edge f1--e1-->f2 where f2 is a cylindrical face, must be
-    # fed through our unbending functions with e1 as the stationary edge
+    try:
+        FreeCAD.Console.PrintLog(
+            "Network of tangent faces:\n" + str(nx.nx_pydot.to_pydot(dg))
+        )
+    except ModuleNotFoundError:
+        FreeCAD.Console.PrintLog(
+            "pydot not installed, debug-printing of face-graphs disabled.\n"
+            "https://networkx.org/documentation/stable/install.html#extra-packages\n"
+        )
+    # the digraph should now have everything we need to unfold the shape,
+    # For every edge f1--e1-->f2 where f2 is a cylindrical face, feed f1
+    # through our unbending functions with e1 as the stationary edge.
     for e in [
         e for e in dg.edges if shape.Faces[e[1]].Surface.TypeId == "Part::GeomCylinder"
     ]:
@@ -644,7 +731,7 @@ def unfold(shape: Part.Shape, root_face_index: int, k_factor: int) -> Part.Shape
         edge_before_bend_index = dg.get_edge_data(e[0], e[1])["label"]
         # check that we aren't trying to unfold across a non-linear reference edge
         # this condition is reached if the user supplies a part with complex formed
-        # features that have unfoldable-but-tangent faces, for example
+        # features that have unfoldable-but-tangent faces, for example.
         edge_before_bend = shape.Edges[edge_before_bend_index]
         if edge_before_bend.Curve.TypeId != "Part::GeomLine":
             errmsg = (
@@ -653,32 +740,36 @@ def unfold(shape: Part.Shape, root_face_index: int, k_factor: int) -> Part.Shape
                 f" (Edge{edge_before_bend_index + 1})"
             )
             raise RuntimeError(errmsg)
-        # compute the unbend transformations
+        # compute the unbend transformation matrices.
         alignment_transform, overall_transform, uvref = compute_unbend_transform(
             bend_part, edge_before_bend, thickness, k_factor
         )
-        # determine the unbent face shape from the reference UV position
-        # also get a bend line across the middle of the flattened face
+        # Determine the unbent face shape from the reference UV position.
+        # Also get a bend line across the middle of the flattened face.
         dg.nodes[e[1]]["unbend_transform"] = overall_transform
         try:
             unbent_face, bend_line = unroll_cylinder(
                 bend_part, uvref, k_factor, thickness
             )
-            # add the transformation and unbend shape to the end node of the edge
-            # as attributes
+            # Add the transformation and unbend shape to the end node of the edge
+            # as attributes.
             dg.nodes[e[1]]["unbent_shape"] = unbent_face.transformed(
                 alignment_transform
             )
             dg.nodes[e[1]]["bend_line"] = bend_line.transformed(alignment_transform)
         except Exception as E:
-            msg = "failed to unroll a cylindrical face"
-            FreeCAD.Console.PrintWarning(msg + "\n" + f"Original exception: {E}\n")
-    # get a path from the root (stationary) face to each other face
-    # so we can combine transformations to position the final shape
+            msg = (
+                f"failed to unroll a cylindrical face (Face{e[1]+1})"
+                + "\n"
+                + f"Original exception: {E}\n"
+            )
+            FreeCAD.Console.PrintWarning(msg)
+    # Get a path from the root (stationary) face to each other face,
+    # so we can combine transformations to position the final shape.
     list_of_faces = []
     list_of_bend_lines = []
-    # apply the unbent transformation to all the flattened geometry to bring
-    # it in-plane with the root face
+    # Apply the unbent transformation to all the flattened geometry to bring
+    # it in-plane with the root face.
     for face_id, path in nx.shortest_path(dg, source=root_face_index).items():
         # the path includes the root face itself, which we don't need
         path_to_face = path[:-1]
@@ -706,6 +797,7 @@ def unfold(shape: Part.Shape, root_face_index: int, k_factor: int) -> Part.Shape
                 node_data[face_id]["bend_line"].transformed(final_mat)
             )
         list_of_faces.append(finalized_face.transformed(final_mat))
+    # Extrude the 2d profile back into a flattened solid body.
     extrude_vec = (
         shape.Faces[root_face_index].normalAt(0, 0).normalize() * -1 * thickness
     )
@@ -717,17 +809,10 @@ def unfold(shape: Part.Shape, root_face_index: int, k_factor: int) -> Part.Shape
     return solid, bend_lines
 
 
-def convert_edges_to_sketch(
-    edges: list[Part.Edge], object_name: str
-) -> FreeCAD.DocumentObject:
-    sk = makeSketch(
-        edges, autoconstraints=False, addTo=None, delete=False, name=object_name
-    )
-    sk.Label = object_name
-    return sk
-
-
 def gui_unfold() -> None:
+    """This is the main entry-point for the unfolder.
+    It grabs a selected sheet metal part and reference face fro mteh active
+    FreeCAD document, and creates new objects showing the unfold results."""
     # the user must select a single flat face of a sheet metal part in the
     # active document
     selection = FreeCAD.Gui.Selection.getCompleteSelection()[0]
@@ -736,31 +821,24 @@ def gui_unfold() -> None:
     shp = selected_object.Shape.transformed(object_placement.inverse())
     root_face_index = int(selection.SubElementNames[0][4:]) - 1
     unfolded_shape, bend_lines = unfold(shp, root_face_index, k_factor=0.5)
-    # extract sketch lines from the topmost flattened face.
-    # Another approach would be to slice the flattened solid with a plane to
-    # get a cross section of the middle of the unfolded shape.
-    # This would probably be slower, but might be more robust in cases where
-    # the outerwire is not cleanly defined.
+
     root_normal = shp.Faces[root_face_index].normalAt(0, 0)
-    top_face = [
-        f
-        for f in unfolded_shape.Faces
-        if f.normalAt(0, 0).getAngle(root_normal) < eps_angular
-    ][0]
-    sketch_profile = top_face.OuterWire
-    inner_wires = [
-        w for w in top_face.Wires if w.hashCode() != sketch_profile.hashCode()
-    ]
+    sketch_profile, inner_wires = SketchExtraction.extract_manually(
+        unfolded_shape, root_normal
+    )
     # move the sketch profiles nicely to the origin
-    sketch_align_transform = sketch_transform_to_origin(
+    sketch_align_transform = SketchExtraction.move_to_origin(
         sketch_profile, shp.Faces[root_face_index]
     )
     sketch_profile = sketch_profile.transformed(sketch_align_transform)
     # show objects in the active document
     unfold_doc_obj = Part.show(unfolded_shape, selected_object.Label + "_Unfold")
-    unfold_doc_obj.ViewObject.Transparency = 70
+    unfold_vobj = unfold_doc_obj.ViewObject
     unfold_doc_obj.Placement = Placement(object_placement)
-    sketch_doc_obj = convert_edges_to_sketch(
+    # set apperance
+    unfold_vobj.ShapeAppearance = selected_object.ViewObject.ShapeAppearance
+    unfold_vobj.Transparency = 70
+    sketch_doc_obj = SketchExtraction.edges_to_sketch_object(
         sketch_profile.Edges, selected_object.Label + "_UnfoldProfile"
     )
     sketch_doc_obj.ViewObject.LineColor = (0, 85, 255, 0)
@@ -768,7 +846,7 @@ def gui_unfold() -> None:
     # bend lines are sometimes not present
     if bend_lines:
         bend_lines = bend_lines.transformed(sketch_align_transform)
-        bend_lines_doc_obj = convert_edges_to_sketch(
+        bend_lines_doc_obj = SketchExtraction.edges_to_sketch_object(
             bend_lines, selected_object.Label + "_BendLines"
         )
         bend_lines_doc_obj.ViewObject.LineColor = (255, 0, 0, 0)
@@ -777,7 +855,7 @@ def gui_unfold() -> None:
     # inner lines are sometimes not present
     if inner_wires:
         inner_lines = Part.makeCompound(inner_wires).transformed(sketch_align_transform)
-        inner_lines_doc_obj = convert_edges_to_sketch(
+        inner_lines_doc_obj = SketchExtraction.edges_to_sketch_object(
             inner_lines, selected_object.Label + "_InnerLines"
         )
         inner_lines_doc_obj.ViewObject.LineColor = (255, 255, 0, 0)
@@ -785,4 +863,5 @@ def gui_unfold() -> None:
 
 
 if __name__ == "__main__":
-    gui_unfold()
+    if nx is not None:
+        gui_unfold()
