@@ -558,7 +558,7 @@ def sketch_transform_to_origin(sketch: Part.Compound, root_face: Part.Face) -> M
     x_axis = root_face.valueAt(1, 0) - origin
     z_axis = root_face.normalAt(0, 0)
     rotation = Rotation(x_axis, Vector(), z_axis, "ZXY")
-    alignment_transform = Placement(origin, rotation).toMatrix()
+    alignment_transform = Placement(origin, rotation).toMatrix().inverse()
     sketch_aligned_to_xy_plane = sketch.transformed(alignment_transform)
     # move in x and y so that the bounding box is entirely in the +x, +y quadrant
     mov_x = -1 * sketch_aligned_to_xy_plane.BoundBox.XMin
