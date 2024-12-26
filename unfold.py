@@ -105,185 +105,193 @@ def estimate_thickness_from_face(shape: Part.Shape, selected_face: int) -> float
     )
 
 
-def compare_plane_plane(p1: Part.Plane, p2: Part.Plane) -> bool:
-    # returns True if the two planes have similar normals and the base
-    # point of the first plane is (nearly) coincident with the second plane
-    return (
-        p1.Axis.isParallel(p2.Axis, eps_angular)
-        and p1.Position.distanceToPlane(p2.Position, p2.Axis) < eps
-    )
-
-
-def compare_plane_cylinder(p: Part.Plane, c: Part.Cylinder) -> bool:
-    # returns True if the cylinder is tangent to the plane
-    # (there is 'line contact' between the surfaces)
-    return (
-        p.Axis.isNormal(c.Axis, eps_angular)
-        and abs(abs(c.Center.distanceToPlane(p.Position, p.Axis)) - c.Radius) < eps
-    )
-
-
-def compare_cylinder_cylinder(c1: Part.Cylinder, c2: Part.Cylinder) -> bool:
-    # returns True if the two cylinders have parallel axis' and those axis'
-    # are separated by a distance of approximately r1 + r2
-    return (
-        c1.Axis.isParallel(c2.Axis, eps_angular)
-        and abs(c1.Center.distanceToLine(c2.Center, c2.Axis) - (c1.Radius + c2.Radius))
-        < eps
-    )
-
-
-def compare_plane_torus(p: Part.Plane, t: Part.Toroid) -> bool:
-    # Imagine a donut sitting flat on a table.
-    # That's our tangency condition for a plane and a toroid.
-    return (
-        p.Axis.isParallel(t.Axis, eps_angular)
-        and abs(abs(t.Center.distanceToPlane(p.Position, p.Axis)) - t.MinorRadius) < eps
-    )
-
-
-def compare_cylinder_torus(c: Part.Cylinder, t: Part.Toroid) -> bool:
-    # If the surfaces are tangent, either we have:
-    # - a donut inside a circular container, with no gap at the container perimeter
-    # - a donut shoved onto a shaft with no wiggle room
-    # - a cylinder with an axis tangent to the central circle of the donut
-    return (
-        c.Axis.isParallel(t.Axis, eps_angular)
-        and c.Center.distanceToLine(t.Center, t.Axis) < eps
-        and (
-            abs(c.Radius - abs(t.MajorRadius - t.MinorRadius)) < eps
-            or abs(c.Radius - abs(t.MajorRadius + t.MinorRadius)) < eps
+class TangentFaces:
+    @staticmethod
+    def compare_plane_plane(p1: Part.Plane, p2: Part.Plane) -> bool:
+        # returns True if the two planes have similar normals and the base
+        # point of the first plane is (nearly) coincident with the second plane
+        return (
+            p1.Axis.isParallel(p2.Axis, eps_angular)
+            and p1.Position.distanceToPlane(p2.Position, p2.Axis) < eps
         )
-    ) or (
-        c.Axis.isNormal(t.Axis, eps_angular)
-        and abs(abs(t.Center.distanceToLine(c.Center, c.Axis)) - t.MajorRadius) < eps
-        and abs(c.Radius - t.MinorRadius) < eps
-    )
 
+    @staticmethod
+    def compare_plane_cylinder(p: Part.Plane, c: Part.Cylinder) -> bool:
+        # returns True if the cylinder is tangent to the plane
+        # (there is 'line contact' between the surfaces)
+        return (
+            p.Axis.isNormal(c.Axis, eps_angular)
+            and abs(abs(c.Center.distanceToPlane(p.Position, p.Axis)) - c.Radius) < eps
+        )
 
-def compare_sphere_sphere(s1: Part.Sphere, s2: Part.Sphere) -> bool:
-    # only segments of identical spheres are tangent to each other
-    return (
-        s1.Center.distanceToPoint(s2.Center) < eps and abs(s1.Radius - s2.Radius) < eps
-    )
+    @staticmethod
+    def compare_cylinder_cylinder(c1: Part.Cylinder, c2: Part.Cylinder) -> bool:
+        # returns True if the two cylinders have parallel axis' and those axis'
+        # are separated by a distance of approximately r1 + r2
+        return (
+            c1.Axis.isParallel(c2.Axis, eps_angular)
+            and abs(
+                c1.Center.distanceToLine(c2.Center, c2.Axis) - (c1.Radius + c2.Radius)
+            )
+            < eps
+        )
 
+    @staticmethod
+    def compare_plane_torus(p: Part.Plane, t: Part.Toroid) -> bool:
+        # Imagine a donut sitting flat on a table.
+        # That's our tangency condition for a plane and a toroid.
+        return (
+            p.Axis.isParallel(t.Axis, eps_angular)
+            and abs(abs(t.Center.distanceToPlane(p.Position, p.Axis)) - t.MinorRadius)
+            < eps
+        )
 
-def compare_plane_sphere(p: Part.Plane, s: Part.Sphere) -> bool:
-    # This function will probably never actually return True,
-    # because a plane and a sphere only ever share a vertex if
-    # they are tangent to each other
-    return abs(abs(s.Center.distanceToPlane(p.Position, p.Axis)) - s.Radius) < eps
+    @staticmethod
+    def compare_cylinder_torus(c: Part.Cylinder, t: Part.Toroid) -> bool:
+        # If the surfaces are tangent, either we have:
+        # - a donut inside a circular container, with no gap at the container perimeter
+        # - a donut shoved onto a shaft with no wiggle room
+        # - a cylinder with an axis tangent to the central circle of the donut
+        return (
+            c.Axis.isParallel(t.Axis, eps_angular)
+            and c.Center.distanceToLine(t.Center, t.Axis) < eps
+            and (
+                abs(c.Radius - abs(t.MajorRadius - t.MinorRadius)) < eps
+                or abs(c.Radius - abs(t.MajorRadius + t.MinorRadius)) < eps
+            )
+        ) or (
+            c.Axis.isNormal(t.Axis, eps_angular)
+            and abs(abs(t.Center.distanceToLine(c.Center, c.Axis)) - t.MajorRadius)
+            < eps
+            and abs(c.Radius - t.MinorRadius) < eps
+        )
 
+    @staticmethod
+    def compare_sphere_sphere(s1: Part.Sphere, s2: Part.Sphere) -> bool:
+        # only segments of identical spheres are tangent to each other
+        return (
+            s1.Center.distanceToPoint(s2.Center) < eps
+            and abs(s1.Radius - s2.Radius) < eps
+        )
 
-def compare_cylinder_sphere(c: Part.Cylinder, s: Part.Sphere) -> bool:
-    # the sphere must be sized/positioned like a ball sliding down a tube
-    # with no wiggle room
-    return (
-        s.Center.distanceToLine(c.Center, c.Axis) < eps
-        and abs(s.Radius - c.Radius) < eps
-    )
+    @staticmethod
+    def compare_plane_sphere(p: Part.Plane, s: Part.Sphere) -> bool:
+        # This function will probably never actually return True,
+        # because a plane and a sphere only ever share a vertex if
+        # they are tangent to each other
+        return abs(abs(s.Center.distanceToPlane(p.Position, p.Axis)) - s.Radius) < eps
 
+    @staticmethod
+    def compare_cylinder_sphere(c: Part.Cylinder, s: Part.Sphere) -> bool:
+        # the sphere must be sized/positioned like a ball sliding down a tube
+        # with no wiggle room
+        return (
+            s.Center.distanceToLine(c.Center, c.Axis) < eps
+            and abs(s.Radius - c.Radius) < eps
+        )
 
-def is_faces_tangent(f1: Part.Face, f2: Part.Face) -> bool:
-    match f1.Surface.TypeId:
-        case "Part::GeomPlane":
-            match f2.Surface.TypeId:
-                case "Part::GeomPlane":
-                    return compare_plane_plane(f1.Surface, f2.Surface)
-                case "Part::GeomCylinder":
-                    return compare_plane_cylinder(f1.Surface, f2.Surface)
-                case "Part::GeomToroid":
-                    return compare_plane_torus(f1.Surface, f2.Surface)
-                case "Part::GeomSphere":
-                    return compare_plane_sphere(f1.Surface, f2.Surface)
-                case "Part::GeomSurfaceOfExtrusion":
-                    return False
-                case "Part::GeomCone":
-                    return False
-                case _:
-                    return False
-        case "Part::GeomCylinder":
-            match f2.Surface.TypeId:
-                case "Part::GeomPlane":
-                    return compare_plane_cylinder(f2.Surface, f1.Surface)
-                case "Part::GeomCylinder":
-                    return compare_cylinder_cylinder(f1.Surface, f2.Surface)
-                case "Part::GeomToroid":
-                    return False
-                case "Part::GeomSphere":
-                    return compare_cylinder_sphere(f1.Surface, f2.Surface)
-                case "Part::GeomSurfaceOfExtrusion":
-                    return False
-                case "Part::GeomCone":
-                    return False
-                case _:
-                    return False
-        case "Part::GeomToroid":
-            match f2.Surface.TypeId:
-                case "Part::GeomPlane":
-                    return compare_plane_torus(f2.Surface, f1.Surface)
-                case "Part::GeomCylinder":
-                    return compare_cylinder_torus(f2.Surface, f1.Surface)
-                case "Part::GeomToroid":
-                    return False
-                case "Part::GeomSphere":
-                    return False
-                case "Part::GeomSurfaceOfExtrusion":
-                    return False
-                case "Part::GeomCone":
-                    return False
-                case _:
-                    return False
-        case "Part::GeomSphere":
-            match f2.Surface.TypeId:
-                case "Part::GeomPlane":
-                    return compare_plane_sphere(f2.Surface, f1.Surface)
-                case "Part::GeomCylinder":
-                    return compare_cylinder_sphere(f2.Surface, f1.Surface)
-                case "Part::GeomToroid":
-                    return False
-                case "Part::GeomSphere":
-                    return compare_sphere_sphere(f1.Surface, f2.Surface)
-                case "Part::GeomSurfaceOfExtrusion":
-                    return False
-                case "Part::GeomCone":
-                    return False
-                case _:
-                    return False
-        case "Part::GeomSurfaceOfExtrusion":
-            match f2.Surface.TypeId:
-                case "Part::GeomPlane":
-                    return False
-                case "Part::GeomCylinder":
-                    return False
-                case "Part::GeomToroid":
-                    return False
-                case "Part::GeomSphere":
-                    return False
-                case "Part::GeomSurfaceOfExtrusion":
-                    return False
-                case "Part::GeomCone":
-                    return False
-                case _:
-                    return False
-        case "Part::GeomCone":
-            match f2.Surface.TypeId:
-                case "Part::GeomPlane":
-                    return False
-                case "Part::GeomCylinder":
-                    return False
-                case "Part::GeomToroid":
-                    return False
-                case "Part::GeomSphere":
-                    return False
-                case "Part::GeomSurfaceOfExtrusion":
-                    return False
-                case "Part::GeomCone":
-                    return False
-                case _:
-                    return False
-        case _:
-            return False
+    @staticmethod
+    def compare(f1: Part.Face, f2: Part.Face) -> bool:
+        cls = TangentFaces
+        match f1.Surface.TypeId:
+            case "Part::GeomPlane":
+                match f2.Surface.TypeId:
+                    case "Part::GeomPlane":
+                        return cls.compare_plane_plane(f1.Surface, f2.Surface)
+                    case "Part::GeomCylinder":
+                        return cls.compare_plane_cylinder(f1.Surface, f2.Surface)
+                    case "Part::GeomToroid":
+                        return cls.compare_plane_torus(f1.Surface, f2.Surface)
+                    case "Part::GeomSphere":
+                        return cls.compare_plane_sphere(f1.Surface, f2.Surface)
+                    case "Part::GeomSurfaceOfExtrusion":
+                        return False
+                    case "Part::GeomCone":
+                        return False
+                    case _:
+                        return False
+            case "Part::GeomCylinder":
+                match f2.Surface.TypeId:
+                    case "Part::GeomPlane":
+                        return cls.compare_plane_cylinder(f2.Surface, f1.Surface)
+                    case "Part::GeomCylinder":
+                        return cls.compare_cylinder_cylinder(f1.Surface, f2.Surface)
+                    case "Part::GeomToroid":
+                        return False
+                    case "Part::GeomSphere":
+                        return cls.compare_cylinder_sphere(f1.Surface, f2.Surface)
+                    case "Part::GeomSurfaceOfExtrusion":
+                        return False
+                    case "Part::GeomCone":
+                        return False
+                    case _:
+                        return False
+            case "Part::GeomToroid":
+                match f2.Surface.TypeId:
+                    case "Part::GeomPlane":
+                        return cls.compare_plane_torus(f2.Surface, f1.Surface)
+                    case "Part::GeomCylinder":
+                        return cls.compare_cylinder_torus(f2.Surface, f1.Surface)
+                    case "Part::GeomToroid":
+                        return False
+                    case "Part::GeomSphere":
+                        return False
+                    case "Part::GeomSurfaceOfExtrusion":
+                        return False
+                    case "Part::GeomCone":
+                        return False
+                    case _:
+                        return False
+            case "Part::GeomSphere":
+                match f2.Surface.TypeId:
+                    case "Part::GeomPlane":
+                        return cls.compare_plane_sphere(f2.Surface, f1.Surface)
+                    case "Part::GeomCylinder":
+                        return cls.compare_cylinder_sphere(f2.Surface, f1.Surface)
+                    case "Part::GeomToroid":
+                        return False
+                    case "Part::GeomSphere":
+                        return cls.compare_sphere_sphere(f1.Surface, f2.Surface)
+                    case "Part::GeomSurfaceOfExtrusion":
+                        return False
+                    case "Part::GeomCone":
+                        return False
+                    case _:
+                        return False
+            case "Part::GeomSurfaceOfExtrusion":
+                match f2.Surface.TypeId:
+                    case "Part::GeomPlane":
+                        return False
+                    case "Part::GeomCylinder":
+                        return False
+                    case "Part::GeomToroid":
+                        return False
+                    case "Part::GeomSphere":
+                        return False
+                    case "Part::GeomSurfaceOfExtrusion":
+                        return False
+                    case "Part::GeomCone":
+                        return False
+                    case _:
+                        return False
+            case "Part::GeomCone":
+                match f2.Surface.TypeId:
+                    case "Part::GeomPlane":
+                        return False
+                    case "Part::GeomCylinder":
+                        return False
+                    case "Part::GeomToroid":
+                        return False
+                    case "Part::GeomSphere":
+                        return False
+                    case "Part::GeomSurfaceOfExtrusion":
+                        return False
+                    case "Part::GeomCone":
+                        return False
+                    case _:
+                        return False
+            case _:
+                return False
 
 
 def build_graph_of_tangent_faces(shp: Part.Shape, root: int) -> nx.Graph | None:
@@ -302,7 +310,7 @@ def build_graph_of_tangent_faces(shp: Part.Shape, root: int) -> nx.Graph | None:
     # this assumption is probably only valid for watertight solids.
     for edge_index, faces in filter(lambda c: len(c[1]) == 2, candidates):
         face_a, face_b = faces
-        if is_faces_tangent(face_a, face_b):
+        if TangentFaces.compare(face_a, face_b):
             gr.add_edge(
                 index_lookup[face_a.hashCode()],
                 index_lookup[face_b.hashCode()],
