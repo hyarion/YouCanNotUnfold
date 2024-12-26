@@ -713,7 +713,7 @@ def convert_edges_to_sketch(
     edges: list[Part.Edge], object_name: str
 ) -> FreeCAD.DocumentObject:
     sk = makeSketch(
-        edges, autoconstraints=True, addTo=None, delete=False, name=object_name
+        edges, autoconstraints=False, addTo=None, delete=False, name=object_name
     )
     sk.Label = object_name
     return sk
