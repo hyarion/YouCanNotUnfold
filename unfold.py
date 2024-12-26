@@ -24,7 +24,7 @@
 
 from enum import Enum, auto
 from functools import reduce
-from itertools import combinations, permutations
+from itertools import combinations
 from math import degrees, log10, radians
 from operator import mul as multiply_operator
 from statistics import StatisticsError, mode
@@ -360,7 +360,7 @@ def unroll_cylinder(
     else:
         bend_allowance = (radius - thickness * (1 - k_factor)) * bend_angle
     overall_height = abs(vmax - vmin)
-    y_scale_factor = radius * bend_allowance / (radius * bend_angle)
+    y_scale_factor = bend_allowance / bend_angle
     flattened_edges = []
     for e in cylindrical_face.Edges:
         edge_on_surface, e_param_min, e_param_max = cylindrical_face.curveOnSurface(e)
@@ -400,8 +400,7 @@ def unroll_cylinder(
     # the edges recovered from cylindrical_face.Edges are likely to not be
     # ordered and oriented tip-to-tail, which are requirements for the
     # FaceMaker classes to produce valid output. Running Part.sortEdges
-    # fixes this. Interestingly, shapes exported as .step files then imported
-    # back into FreeCAD always have nicely sorted edges for each face...
+    # fixes this.
     list_of_list_of_edges = Part.sortEdges(flattened_edges)
     wires = [Part.Wire(x) for x in list_of_list_of_edges]
     try:
@@ -410,26 +409,24 @@ def unroll_cylinder(
         errmsg = "Failed to create unbent face from cylinder"
         raise RuntimeError(errmsg) from None
     mirror_base_pos = Vector(overall_height / 2, bend_allowance / 2)
-    flip = [
-        lambda x: x,
-        lambda x: x.mirror(mirror_base_pos, Vector(0, 1)),
-        lambda x: x.mirror(mirror_base_pos, Vector(0, 1)).mirror(
-            mirror_base_pos, Vector(1, 0)
-        ),
-        lambda x: x.mirror(mirror_base_pos, Vector(1, 0)),
-    ]
-    flip_options = list(permutations([0, 1, 2, 3], 4))
-    flip_order = flip_options[1]
+    # there are four possible orientations of the face corresponding to four
+    # quadrants of the 2D plane. Whether flipping across the x/y/both axis is
+    # required depends on the initial orientation and the UV parameters.
+    # The correct flip conditions were figured out by brute force
+    # (checking each possible permutation).
     match refpos:
         case UVRef.BOTTOM_LEFT:
-            fixed_face = flip[flip_order[0]](face)
+            fixed_face = face
         case UVRef.BOTTOM_RIGHT:
-            fixed_face = flip[flip_order[1]](face)
+            fixed_face = face.mirror(mirror_base_pos, Vector(0, 1))
         case UVRef.TOP_LEFT:
-            fixed_face = flip[flip_order[2]](face)
+            fixed_face = face.mirror(mirror_base_pos, Vector(1, 0))
         case UVRef.TOP_RIGHT:
-            fixed_face = flip[flip_order[3]](face)
-
+            fixed_face = face.mirror(mirror_base_pos, Vector(0, 1)).mirror(
+                mirror_base_pos, Vector(1, 0)
+            )
+    # Draw a bend line a little bit longer than the original face,
+    # then trim away the excess.
     bent_volume = fixed_face.translated(Vector(0, 0, -0.5)).extrude(Vector(0, 0, 1))
     half_bend_width = Vector(0.55 * (vmax - vmin), 0)
     bend_line = bent_volume.common(
