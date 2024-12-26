@@ -575,6 +575,9 @@ def unroll_cylinder(
 def compute_unbend_transform(
     bent_face: Part.Face, base_edge: Part.Edge, thickness: float, k_factor: float
 ) -> tuple[Matrix, Matrix, UVRef]:
+    """Computes the position and orientation of a reference corner on a bent
+    surface, as well as a transformation to flatten out subsequent faces to
+    align with the pre-bend part of the shape"""
     # for cylindrical surfaces, the u-parameter corresponds to the radial
     # direction, and the u-period is the radial boundary of the cylindrical
     # patch. The v-period corresponds to the axial direction.
