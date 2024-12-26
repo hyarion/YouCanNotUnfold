@@ -831,13 +831,13 @@ def gui_unfold() -> None:
     FreeCAD document, and creates new objects showing the unfold results."""
     # the user must select a single flat face of a sheet metal part in the
     # active document
+    doc = FreeCAD.ActiveDocument
     selection = FreeCAD.Gui.Selection.getCompleteSelection()[0]
     selected_object = selection.Object
     object_placement = selected_object.getGlobalPlacement().toMatrix()
     shp = selected_object.Shape.transformed(object_placement.inverse())
     root_face_index = int(selection.SubElementNames[0][4:]) - 1
     unfolded_shape, bend_lines = unfold(shp, root_face_index, k_factor=0.5)
-
     root_normal = shp.Faces[root_face_index].normalAt(0, 0)
     sketch_profile, inner_wires, hole_wires = SketchExtraction.extract_manually(
         unfolded_shape, root_normal
@@ -854,37 +854,45 @@ def gui_unfold() -> None:
     # set apperance
     unfold_vobj.ShapeAppearance = selected_object.ViewObject.ShapeAppearance
     unfold_vobj.Transparency = 70
+    # organize the unfold sketch layers in a group
+    grp = doc.addObject(
+        "App::DocumentObjectGroup", selected_object.Label + "_UnfoldSketch"
+    )
     sketch_doc_obj = SketchExtraction.edges_to_sketch_object(
         sketch_profile.Edges, selected_object.Label + "_UnfoldProfile"
     )
     sketch_doc_obj.ViewObject.LineColor = (0, 85, 255, 0)
     sketch_doc_obj.ViewObject.PointColor = (0, 85, 255, 0)
+    grp.addObject(sketch_doc_obj)
     # bend lines are sometimes not present
     if bend_lines:
         bend_lines = bend_lines.transformed(sketch_align_transform)
         bend_lines_doc_obj = SketchExtraction.edges_to_sketch_object(
-            bend_lines, selected_object.Label + "_BendLines"
+            bend_lines, selected_object.Label + "_UnfoldBendLines"
         )
         bend_lines_doc_obj.ViewObject.LineColor = (255, 0, 0, 0)
         bend_lines_doc_obj.ViewObject.PointColor = (255, 0, 0, 0)
         bend_lines_doc_obj.ViewObject.DrawStyle = "Dashdot"
+        grp.addObject(bend_lines_doc_obj)
     # inner lines are sometimes not present
     if inner_wires:
         inner_lines = Part.makeCompound(inner_wires).transformed(sketch_align_transform)
         inner_lines_doc_obj = SketchExtraction.edges_to_sketch_object(
-            inner_lines, selected_object.Label + "_InnerLines"
+            inner_lines, selected_object.Label + "_UnfoldInnerLines"
         )
         inner_lines_doc_obj.ViewObject.LineColor = (255, 255, 0, 0)
         inner_lines_doc_obj.ViewObject.PointColor = (255, 255, 0, 0)
+        grp.addObject(inner_lines_doc_obj)
     if hole_wires:
         hole_lines = Part.makeCompound(hole_wires).transformed(sketch_align_transform)
         hole_lines_doc_obj = SketchExtraction.edges_to_sketch_object(
-            hole_lines, selected_object.Label + "_Holes"
+            hole_lines, selected_object.Label + "_UnfoldHoles"
         )
         hole_lines_doc_obj.ViewObject.LineColor = (85, 255, 0, 0)
         hole_lines_doc_obj.ViewObject.PointColor = (85, 255, 0, 0)
+        grp.addObject(hole_lines_doc_obj)
+    doc.recompute()
 
 
 if __name__ == "__main__":
-    if nx is not None:
-        gui_unfold()
+    gui_unfold()
