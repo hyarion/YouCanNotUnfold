@@ -865,7 +865,7 @@ def gui_unfold() -> None:
     sketch_doc_obj.ViewObject.PointColor = (0, 85, 255, 0)
     grp.addObject(sketch_doc_obj)
     # bend lines are sometimes not present
-    if bend_lines:
+    if bend_lines.Edges:
         bend_lines = bend_lines.transformed(sketch_align_transform)
         bend_lines_doc_obj = SketchExtraction.edges_to_sketch_object(
             bend_lines, selected_object.Label + "_UnfoldBendLines"
