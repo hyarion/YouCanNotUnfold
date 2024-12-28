@@ -773,7 +773,7 @@ def unfold(
 
 def gui_unfold() -> None:
     """This is the main entry-point for the unfolder.
-    It grabs a selected sheet metal part and reference face fro mteh active
+    It grabs a selected sheet metal part and reference face from the active
     FreeCAD document, and creates new objects showing the unfold results."""
     # the user must select a single flat face of a sheet metal part in the
     # active document
